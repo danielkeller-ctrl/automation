@@ -11,7 +11,8 @@ from rti_feed import RTIFeed
 # --- Config -----------------------------------------------------------------
 SERIES_TICKER = "KXBTC15M"
 RTI_INDEX_ID = "BRTI"    # CF Benchmarks Bitcoin Real-Time Index
-CSV_FILENAME = "btc_orderbook_data.csv"
+# daily CSVs land in Kalshi/data (anchored to this script, not the CWD)
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 POLL_INTERVAL = 1        # seconds between successful logs
 RETRY_INTERVAL = 5       # seconds to wait after an error / no market
 
@@ -96,6 +97,18 @@ def build_row(market, ob, rti_price):
     return row
 
 
+def open_daily_csv(date_str):
+    """Open (append) the CSV for a given local date, writing the header if new."""
+    path = os.path.join(DATA_DIR, f"btc_orderbook_data_{date_str}.csv")
+    is_new = not os.path.exists(path)
+    f = open(path, "a", newline="")
+    writer = csv.DictWriter(f, fieldnames=columns)
+    if is_new:
+        writer.writeheader()
+        f.flush()
+    return path, f, writer
+
+
 def main():
     print("Starting pipeline using Dynamic Market Discovery...")
 
@@ -106,49 +119,58 @@ def main():
     rti_feed.start()
     print(f"Waiting for {RTI_INDEX_ID} feed to warm up...")
 
-    # Open the CSV once and stream rows to it (append if it already exists)
-    file_exists = os.path.exists(CSV_FILENAME)
-    with open(CSV_FILENAME, "a", newline="") as f, \
-         KalshiClient(key_id=api_key_id, private_key_path=key_file_path) as client:
+    # Stream rows to a per-day CSV, rotating when the local date changes.
+    os.makedirs(DATA_DIR, exist_ok=True)
+    current_date = None
+    f = writer = None
 
-        writer = csv.DictWriter(f, fieldnames=columns)
-        if not file_exists:
-            writer.writeheader()
-            f.flush()
+    try:
+        with KalshiClient(key_id=api_key_id, private_key_path=key_file_path) as client:
+            while True:
+                try:
+                    # Rotate to a new file at local midnight (or on first pass)
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    if today != current_date:
+                        if f is not None:
+                            f.close()
+                        path, f, writer = open_daily_csv(today)
+                        current_date = today
+                        print(f"Writing to {path}")
 
-        while True:
-            try:
-                market = find_active_market(client)
-                if market is None:
-                    print("No active market found. Waiting...")
+                    market = find_active_market(client)
+                    if market is None:
+                        print("No active market found. Waiting...")
+                        time.sleep(RETRY_INTERVAL)
+                        continue
+
+                    ticker = market.ticker
+                    ob = client.markets.orderbook(ticker)
+
+                    # Live BTC index from the WebSocket feed (0.0 until it warms up)
+                    rti_price = rti_feed.price
+                    if rti_feed.updates == 0:
+                        print("Warning: RTI feed not warmed up yet; logging 0.0")
+                    elif rti_feed.age > 15:
+                        print(f"Warning: RTI feed stale ({rti_feed.age:.0f}s old); "
+                              f"logging last value ${rti_price:,.2f}")
+
+                    row = build_row(market, ob, rti_price)
+                    writer.writerow(row)
+                    f.flush()
+
+                    print(f"Logged {ticker} | RTI: ${float(rti_price):,.2f}")
+                    time.sleep(POLL_INTERVAL)
+
+                except KeyboardInterrupt:
+                    print("\nStopped.")
+                    break
+                except Exception as e:
+                    # Survive transient API / network hiccups instead of crashing
+                    print(f"Error: {e!r} - retrying in {RETRY_INTERVAL}s")
                     time.sleep(RETRY_INTERVAL)
-                    continue
-
-                ticker = market.ticker
-                ob = client.markets.orderbook(ticker)
-
-                # Live BTC index from the WebSocket feed (0.0 until it warms up)
-                rti_price = rti_feed.price
-                if rti_feed.updates == 0:
-                    print("Warning: RTI feed not warmed up yet; logging 0.0")
-                elif rti_feed.age > 15:
-                    print(f"Warning: RTI feed stale ({rti_feed.age:.0f}s old); "
-                          f"logging last value ${rti_price:,.2f}")
-
-                row = build_row(market, ob, rti_price)
-                writer.writerow(row)
-                f.flush()
-
-                print(f"Logged {ticker} | RTI: ${float(rti_price):,.2f}")
-                time.sleep(POLL_INTERVAL)
-
-            except KeyboardInterrupt:
-                print("\nStopped.")
-                break
-            except Exception as e:
-                # Survive transient API / network hiccups instead of crashing
-                print(f"Error: {e!r} - retrying in {RETRY_INTERVAL}s")
-                time.sleep(RETRY_INTERVAL)
+    finally:
+        if f is not None:
+            f.close()
 
 
 if __name__ == "__main__":
