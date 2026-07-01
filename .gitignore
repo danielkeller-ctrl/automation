@@ -1,0 +1,7 @@
+# Ignore environment variable files
+*.env
+*.env.txt
+
+# Ignore all private key files
+*.key
+*.pem
