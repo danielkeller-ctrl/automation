@@ -5,3 +5,9 @@
 # Ignore all private key files
 *.key
 *.pem
+
+# Ignore Excel files
+*.xls   
+*.xlsx
+*.xlsm
+*.csv
