@@ -10,15 +10,18 @@ import os
 
 import pandas as pd
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(_HERE, "data")
-LEGACY = os.path.join(_HERE, "btc_orderbook_data.csv")  # the original ~4h sample
+# Absolute so this loader works regardless of where it's imported from.
+DATA_DIR = "d:/automation/Kalshi/data"
+LEGACY = "d:/automation/Kalshi/btc_orderbook_data.csv"  # old sample location (now under data/)
 
 
 def load():
-    files = sorted(glob.glob(os.path.join(DATA_DIR, "btc_orderbook_data_*.csv")))
-    if os.path.exists(LEGACY):
-        files.append(LEGACY)
+    # Any CSV in data/ counts (daily files + a moved sample); dedup handles overlap.
+    files = sorted(glob.glob(os.path.join(DATA_DIR, "*.csv")))
+    # Back-compat: also pick up the sample if it's still in an old location.
+    for extra in ("d:/automation/btc_orderbook_data.csv", LEGACY):
+        if os.path.exists(extra) and extra not in files:
+            files.append(extra)
     if not files:
         raise SystemExit(
             f"No data files found in {DATA_DIR} (or {LEGACY}). "
